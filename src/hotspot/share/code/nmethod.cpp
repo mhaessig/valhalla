@@ -1454,9 +1454,9 @@ nmethod::nmethod(const nmethod &nm) : CodeBlob(nm._name, nm._kind, nm._size, nm.
   _osr_entry_point              = relocate_address(nm._osr_entry_point);
   _entry_offset                 = nm._entry_offset;
   _verified_entry_offset        = nm._verified_entry_offset;
-  _inline_entry_point           = relocate_address(nm._inline_entry_point);
-  _verified_inline_entry_point  = relocate_address(nm._verified_inline_entry_point);
-  _verified_inline_ro_entry_point = relocate_address(nm._verified_inline_ro_entry_point);
+  _inline_entry_offset             = nm._inline_entry_offset;
+  _verified_inline_entry_offset    = nm._verified_inline_entry_offset;
+  _verified_inline_ro_entry_offset = nm._verified_inline_ro_entry_offset;
 
   _entry_bci                    = nm._entry_bci;
   _immutable_data_size          = nm._immutable_data_size;
