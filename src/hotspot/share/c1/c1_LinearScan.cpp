@@ -32,7 +32,9 @@
 #include "c1/c1_ValueStack.hpp"
 #include "code/vmreg.inline.hpp"
 #include "runtime/timerTrace.hpp"
+#include "utilities/bitMap.hpp"
 #include "utilities/bitMap.inline.hpp"
+#include "utilities/checkedCast.hpp"
 
 #ifndef PRODUCT
 
@@ -89,6 +91,7 @@ LinearScan::LinearScan(IR* ir, LIRGenerator* gen, FrameMap* frame_map)
  , _block_of_op(0) // initialized later with correct length
  , _has_info(0)
  , _has_call(0)
+ , _no_spill(0)
  , _interval_in_loop(0)  // initialized later with correct length
  , _scope_value_cache(0) // initialized later with correct length
 {
@@ -456,6 +459,7 @@ void LinearScan::eliminate_spill_moves() {
           LIR_Opr to_opr = canonical_spill_opr(interval);
           assert(from_opr->is_fixed_cpu() || from_opr->is_fixed_fpu(), "from operand must be a register");
           assert(to_opr->is_stack(), "to operand must be a stack slot");
+          assert(!_no_spill.at(j), "must not move in no-spill region");
 
           insertion_buffer.move(j, from_opr, to_opr);
           TRACE_LINEAR_SCAN(4, tty->print_cr("inserting move after definition of interval %d to stack slot %d at op_id %d", interval->reg_num(), interval->canonical_spill_slot() - LinearScan::nof_regs, op_id));
@@ -524,6 +528,40 @@ void LinearScan::number_instructions() {
 
   _has_call.initialize(num_instructions);
   _has_info.initialize(num_instructions);
+  _no_spill.initialize(op_id);
+}
+
+
+void LinearScan::find_no_spill_locs() {
+  TIME_LINEAR_SCAN(timer_find_no_spill_locs);
+
+  int num_blocks = block_count();
+  for (int b = 0; b < num_blocks; b++) {
+    BlockBegin* block = block_at(b);
+    LIR_OpList* instructions = block->lir()->instructions_list();
+    int num_inst = instructions->length();
+    size_t begin_no_spill = 0;
+    size_t end_no_spill = 0;
+    for (int i = 0; i < num_inst; i++) {
+      LIR_Op* op = instructions->at(i);
+
+      if (op->as_OpNoSpillBegin() != nullptr) {
+        assert(block->first_lir_instruction_id() != op->id(), "must not have no_spill at a block boundary");
+        begin_no_spill = checked_cast<size_t>(op->id());
+        assert(begin_no_spill > end_no_spill, "must make progress");
+      } else if (op->as_OpNoSpillEnd() != nullptr) {
+        assert(begin_no_spill > 0, "no spill end without no spill begin");
+        assert(block->last_lir_instruction_id() != op->id(), "must not have no_spill at a block boundary");
+        end_no_spill = checked_cast<size_t>(op->id());
+        assert(end_no_spill > begin_no_spill, "must make progress");
+      }
+
+      if (begin_no_spill > 0 && end_no_spill > 0 && begin_no_spill < end_no_spill) {
+        _no_spill.set_range(begin_no_spill, end_no_spill + 1);
+      }
+    }
+    assert((begin_no_spill == 0 && end_no_spill == 0) != (begin_no_spill < end_no_spill), "unclosed no spill LIR region in block %d", b);
+  }
 }
 
 
@@ -1485,7 +1523,39 @@ bool LinearScan::is_sorted(IntervalArray* intervals) {
 
   return true;
 }
-#endif
+#endif // ASSERT
+
+// Helper function to find largest region in interval where no_spill is not set.
+LinearScan::SplitRegion LinearScan::find_largest_split_region(int min_split_pos, int max_split_pos) {
+  // Convert to unsigned and open interval [start, end)
+  size_t start = checked_cast<size_t>(min_split_pos);
+  const size_t end = checked_cast<size_t>(max_split_pos) + 1;
+
+  assert(_no_spill.count_one_bits(start, end) < end - start, "must have unset no_spill positions");
+
+  if (_no_spill.count_one_bits(start, end) == 0) {
+    return SplitRegion(min_split_pos, max_split_pos);
+  }
+
+  size_t best_start = start;
+  size_t best_end = start;
+  size_t best_len = 0;
+  size_t new_end = start;
+  while (start < end && new_end < end) {
+    start = _no_spill.find_first_clear_bit(new_end, end);
+    new_end = _no_spill.find_first_set_bit(start, end);
+    size_t new_len = new_end - start;
+    if (new_len > best_len) {
+      best_start = start;
+      best_end = new_end;
+      best_len = new_len;
+    }
+  }
+
+  assert(best_end - best_start >= 1, "best interval must be one or longer");
+
+  return SplitRegion(checked_cast<int>(best_start), checked_cast<int>(best_end - 1));
+}
 
 void LinearScan::add_to_list(Interval** first, Interval** prev, Interval* interval) {
   if (*prev != nullptr) {
@@ -3018,6 +3088,8 @@ void LinearScan::assign_reg_num() {
 void LinearScan::do_linear_scan() {
   number_instructions();
 
+  find_no_spill_locs();
+
   NOT_PRODUCT(print_lir(1, "Before Register Allocation"));
 
   compute_local_live_sets();
@@ -3862,6 +3934,7 @@ void MoveResolver::insert_move(Interval* from_interval, Interval* to_interval) {
   assert(from_interval->type() == to_interval->type(), "move between different types");
   assert(_insert_list != nullptr && _insert_idx != -1, "must setup insert position first");
   assert(_insertion_buffer.lir_list() == _insert_list, "wrong insertion buffer");
+  assert(!allocator()->_no_spill.at(_insert_idx), "must not move in no-spill region");
 
   LIR_Opr from_opr = get_virtual_register(from_interval);
   LIR_Opr to_opr = get_virtual_register(to_interval);
@@ -5027,6 +5100,8 @@ void LinearScanWalker::insert_move(int op_id, Interval* src_it, Interval* dst_it
 }
 
 
+// Always returns a split pos at a block boundary. Since we enforce that no spill regions can only be
+// within a block and also not at the block boundary, this is always safe with regards to no_spill.
 int LinearScanWalker::find_optimal_split_pos(BlockBegin* min_block, BlockBegin* max_block, int max_split_pos) {
   int from_block_nr = min_block->linear_scan_number();
   int to_block_nr = max_block->linear_scan_number();
@@ -5058,11 +5133,12 @@ int LinearScanWalker::find_optimal_split_pos(BlockBegin* min_block, BlockBegin* 
 }
 
 
-int LinearScanWalker::find_optimal_split_pos(Interval* it, int min_split_pos, int max_split_pos, bool do_loop_optimization) {
+int LinearScanWalker::find_optimal_split_pos(Interval* it, int min_split_pos, int max_split_pos, bool do_loop_optimization, bool enforce_no_spill) {
   int optimal_split_pos = -1;
   if (min_split_pos == max_split_pos) {
     // trivial case, no optimization of split position possible
     TRACE_LINEAR_SCAN(4, tty->print_cr("      min-pos and max-pos are equal, no optimization possible"));
+    assert(!enforce_no_spill || !allocator()->_no_spill.at(min_split_pos), "should not spill at the only possible split pos");
     optimal_split_pos = min_split_pos;
 
   } else {
@@ -5086,6 +5162,10 @@ int LinearScanWalker::find_optimal_split_pos(Interval* it, int min_split_pos, in
       TRACE_LINEAR_SCAN(4, tty->print_cr("      cannot move split pos to block boundary because min_pos and max_pos are in same block"));
       optimal_split_pos = max_split_pos;
 
+      if (enforce_no_spill && allocator()->_no_spill.at(max_split_pos)) {
+        optimal_split_pos = allocator()->_no_spill.find_last_clear_bit(min_split_pos, max_split_pos + 1);
+      }
+
     } else if (it->has_hole_between(max_split_pos - 1, max_split_pos) && !allocator()->is_block_begin(max_split_pos)) {
       // Do not move split position if the interval has a hole before max_split_pos.
       // Intervals resulting from Phi-Functions have more than one definition (marked
@@ -5096,6 +5176,7 @@ int LinearScanWalker::find_optimal_split_pos(Interval* it, int min_split_pos, in
 
     } else {
       // search optimal block boundary between min_split_pos and max_split_pos
+      // Always at block boundary => no_spill safe.
       TRACE_LINEAR_SCAN(4, tty->print_cr("      moving split pos to optimal block boundary between block B%d and B%d", min_block->block_id(), max_block->block_id()));
 
       if (do_loop_optimization) {
@@ -5144,7 +5225,7 @@ int LinearScanWalker::find_optimal_split_pos(Interval* it, int min_split_pos, in
   1) the left part has already a location assigned
   2) the right part is sorted into to the unhandled-list
 */
-void LinearScanWalker::split_before_usage(Interval* it, int min_split_pos, int max_split_pos) {
+void LinearScanWalker::split_before_usage(Interval* it, int min_split_pos, int max_split_pos, bool enforce_no_spill) {
   TRACE_LINEAR_SCAN(2, tty->print   ("----- splitting interval: "); it->print());
   TRACE_LINEAR_SCAN(2, tty->print_cr("      between %d and %d", min_split_pos, max_split_pos));
 
@@ -5153,11 +5234,12 @@ void LinearScanWalker::split_before_usage(Interval* it, int min_split_pos, int m
   assert(min_split_pos <= max_split_pos,     "invalid order");
   assert(max_split_pos <= it->to(),          "cannot split after end of interval");
 
-  int optimal_split_pos = find_optimal_split_pos(it, min_split_pos, max_split_pos, true);
+  int optimal_split_pos = find_optimal_split_pos(it, min_split_pos, max_split_pos, true, enforce_no_spill);
 
   assert(min_split_pos <= optimal_split_pos && optimal_split_pos <= max_split_pos, "out of range");
   assert(optimal_split_pos <= it->to(),  "cannot split after end of interval");
   assert(optimal_split_pos > it->from(), "cannot split at start of interval");
+  assert(!enforce_no_spill || !allocator()->_no_spill.at(optimal_split_pos), "why no enforcement of no_spill?!?");
 
   if (optimal_split_pos == it->to() && it->next_usage(mustHaveRegister, min_split_pos) == max_jint) {
     // the split position would be just before the end of the interval
@@ -5238,8 +5320,11 @@ void LinearScanWalker::split_for_spilling(Interval* it) {
     }
 
   } else {
+    assert(allocator()->_no_spill.count_one_bits(min_split_pos, max_split_pos + 1) <= checked_cast<size_t>(max_split_pos - min_split_pos),
+      "all possible spill locations are marked no spill");
+
     // search optimal split pos, split interval and spill only the right hand part
-    int optimal_split_pos = find_optimal_split_pos(it, min_split_pos, max_split_pos, false);
+    int optimal_split_pos = find_optimal_split_pos(it, min_split_pos, max_split_pos, false, true);
 
     assert(min_split_pos <= optimal_split_pos && optimal_split_pos <= max_split_pos, "out of range");
     assert(optimal_split_pos < it->to(), "cannot split at end of interval");
@@ -5279,14 +5364,14 @@ void LinearScanWalker::split_stack_interval(Interval* it) {
   int min_split_pos = current_position() + 1;
   int max_split_pos = MIN2(it->first_usage(shouldHaveRegister), it->to());
 
-  split_before_usage(it, min_split_pos, max_split_pos);
+  split_before_usage(it, min_split_pos, max_split_pos, false);
 }
 
-void LinearScanWalker::split_when_partial_register_available(Interval* it, int register_available_until) {
+void LinearScanWalker::split_when_partial_register_available(Interval* it, int register_available_until, bool enforce_no_spill) {
   int min_split_pos = MAX2(it->previous_usage(shouldHaveRegister, register_available_until), it->from() + 1);
   int max_split_pos = register_available_until;
 
-  split_before_usage(it, min_split_pos, max_split_pos);
+  split_before_usage(it, min_split_pos, max_split_pos, enforce_no_spill);
 }
 
 void LinearScanWalker::split_and_spill_interval(Interval* it) {
@@ -5308,7 +5393,7 @@ void LinearScanWalker::split_and_spill_interval(Interval* it) {
     int min_split_pos = current_pos + 1;
     int max_split_pos = MIN2(it->next_usage(mustHaveRegister, min_split_pos), it->to());
 
-    split_before_usage(it, min_split_pos, max_split_pos);
+    split_before_usage(it, min_split_pos, max_split_pos, true);
 
     assert(it->next_usage(mustHaveRegister, current_pos) == max_jint, "the remaining part is spilled to stack and therefore has no register");
     split_for_spilling(it);
@@ -5662,7 +5747,7 @@ void LinearScanWalker::alloc_locked_reg(Interval* cur) {
     cur->assign_reg(reg, regHi);
     if (need_split) {
       // register not available for full interval, so split it
-      split_when_partial_register_available(cur, split_pos);
+      split_when_partial_register_available(cur, split_pos, true);
     }
 
     // perform splitting and spilling for all affected intervals
