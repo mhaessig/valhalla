@@ -143,7 +143,6 @@ class LinearScan : public CompilationResourceObj {
   BlockBeginArray           _block_of_op;       // mapping from LIR_Op id to the BlockBegin containing this instruction
   ResourceBitMap            _has_info;          // bit set for each LIR_Op id that has a CodeEmitInfo
   ResourceBitMap            _has_call;          // bit set for each LIR_Op id that destroys all caller save registers
-  ResourceBitMap            _no_spill;
   BitMap2D                  _interval_in_loop;  // bit set for each virtual register that is contained in each loop
 
   // cached debug info to prevent multiple creation of same object
@@ -235,8 +234,6 @@ class LinearScan : public CompilationResourceObj {
   // Phase 1: number all instructions in all blocks
   void number_instructions();
 
-  void find_no_spill_locs();
-
   // Phase 2: compute local live sets separately for each block
   // (sets live_gen and live_kill for each block)
   //
@@ -285,14 +282,6 @@ class LinearScan : public CompilationResourceObj {
   static int interval_cmp(Interval** a, Interval** b);
   void add_to_list(Interval** first, Interval** prev, Interval* interval);
   void create_unhandled_lists(Interval** list1, Interval** list2, bool (is_list1)(const Interval* i), bool (is_list2)(const Interval* i));
-
-  class SplitRegion : StackObj {
-  public:
-    int min_pos;
-    int max_pos;
-    SplitRegion(int min, int max) : min_pos(min), max_pos(max) {};
-  };
-  SplitRegion find_largest_split_region(int min_split_pos, int max_split_pos);
 
   void sort_intervals_before_allocation();
   void sort_intervals_after_allocation();
@@ -753,11 +742,11 @@ class LinearScanWalker : public IntervalWalker {
 
   void insert_move(int op_id, Interval* src_it, Interval* dst_it);
   int  find_optimal_split_pos(BlockBegin* min_block, BlockBegin* max_block, int max_split_pos);
-  int  find_optimal_split_pos(Interval* it, int min_split_pos, int max_split_pos, bool do_loop_optimization, bool enforce_no_spill = false);
-  void split_before_usage(Interval* it, int min_split_pos, int max_split_pos, bool enforce_no_spill = false);
+  int  find_optimal_split_pos(Interval* it, int min_split_pos, int max_split_pos, bool do_loop_optimization);
+  void split_before_usage(Interval* it, int min_split_pos, int max_split_pos);
   void split_for_spilling(Interval* it);
   void split_stack_interval(Interval* it);
-  void split_when_partial_register_available(Interval* it, int register_available_until, bool enforce_no_spill = false);
+  void split_when_partial_register_available(Interval* it, int register_available_until);
   void split_and_spill_interval(Interval* it);
 
   int  find_free_reg(int reg_needed_until, int interval_to, int hint_reg, int ignore_reg, bool* need_split);
@@ -938,7 +927,6 @@ class LinearScanTimers : public StackObj {
   enum Timer {
     timer_do_nothing,
     timer_number_instructions,
-    timer_find_no_spill_locs,
     timer_compute_local_live_sets,
     timer_compute_global_live_sets,
     timer_build_intervals,

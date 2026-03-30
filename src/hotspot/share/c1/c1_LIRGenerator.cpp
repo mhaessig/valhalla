@@ -1940,7 +1940,6 @@ void LIRGenerator::do_StoreIndexed(StoreIndexed* x) {
       // Check if we indeed have a flat array
       index.load_item();
       slow_path = new StoreFlattenedArrayStub(array.result(), index.result(), value.result(), state_for(x, x->state_before()));
-      __ begin_no_spill();
       check_flat_array(array.result(), value.result(), slow_path);
       set_in_conditional_code(true);
     } else if (needs_null_free_array_store_check(x)) {
@@ -1957,7 +1956,6 @@ void LIRGenerator::do_StoreIndexed(StoreIndexed* x) {
     if (slow_path != nullptr) {
       __ branch_destination(slow_path->continuation());
       set_in_conditional_code(false);
-      __ end_no_spill();
     }
   }
 }
@@ -2323,7 +2321,6 @@ void LIRGenerator::do_LoadIndexed(LoadIndexed* x) {
       index.load_item();
       // if we are loading from a flat array, load it using a runtime call
       slow_path = new LoadFlattenedArrayStub(array.result(), index.result(), result, state_for(x, x->state_before()));
-      __ begin_no_spill();
       check_flat_array(array.result(), LIR_OprFact::illegalOpr, slow_path);
       set_in_conditional_code(true);
     }
@@ -2336,7 +2333,6 @@ void LIRGenerator::do_LoadIndexed(LoadIndexed* x) {
     if (slow_path != nullptr) {
       __ branch_destination(slow_path->continuation());
       set_in_conditional_code(false);
-      __ end_no_spill();
     }
 
     element = x;

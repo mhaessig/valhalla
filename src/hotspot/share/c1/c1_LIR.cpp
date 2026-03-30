@@ -1640,16 +1640,6 @@ void LIR_List::substitutability_check(LIR_Opr result, LIR_Opr left, LIR_Opr righ
   append(c);
 }
 
-void LIR_List::begin_no_spill() {
-  LIR_OpNoSpillBegin* op = new LIR_OpNoSpillBegin();
-  append(op);
-}
-
-void LIR_List::end_no_spill() {
-  LIR_OpNoSpillEnd* op = new LIR_OpNoSpillEnd();
-  append(op);
-}
-
 void LIR_List::cas_long(LIR_Opr addr, LIR_Opr cmp_value, LIR_Opr new_value,
                         LIR_Opr t1, LIR_Opr t2, LIR_Opr result) {
   append(new LIR_OpCompareAndSwap(lir_cas_long, addr, cmp_value, new_value, t1, t2, result));
@@ -2284,14 +2274,6 @@ void LIR_OpProfileInlineType::print_instr(outputStream* out) const {
   mdp()->print(out);          out->print(" ");
   obj()->print(out);          out->print(" ");
   tmp()->print(out);          out->print(" ");
-}
-
-void LIR_OpNoSpillBegin::print_instr(outputStream* out) const {
-  out->print("begin no spill ");
-}
-
-void LIR_OpNoSpillEnd::print_instr(outputStream* out) const {
-  out->print("end no spill ");
 }
 
 #endif // PRODUCT

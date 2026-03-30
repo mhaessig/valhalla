@@ -873,8 +873,6 @@ class LIR_OprFact: public AllStatic {
 class  LIR_Op;
 class    LIR_Op0;
 class      LIR_OpLabel;
-class      LIR_OpNoSpillBegin;
-class      LIR_OpNoSpillEnd;
 class    LIR_Op1;
 class      LIR_OpBranch;
 class      LIR_OpConvert;
@@ -1160,8 +1158,6 @@ class LIR_Op: public CompilationResourceObj {
   virtual LIR_OpProfileCall* as_OpProfileCall() { return nullptr; }
   virtual LIR_OpProfileType* as_OpProfileType() { return nullptr; }
   virtual LIR_OpProfileInlineType* as_OpProfileInlineType() { return nullptr; }
-  virtual LIR_OpNoSpillBegin* as_OpNoSpillBegin() { return nullptr; }
-  virtual LIR_OpNoSpillEnd* as_OpNoSpillEnd() { return nullptr; }
 #ifdef ASSERT
   virtual LIR_OpAssert* as_OpAssert() { return nullptr; }
 #endif
@@ -2157,30 +2153,6 @@ class LIR_OpProfileInlineType : public LIR_Op {
   virtual void print_instr(outputStream* out) const PRODUCT_RETURN;
 };
 
-class LIR_OpNoSpillBegin: public LIR_Op0 {
- friend class LIR_OpVisitState;
-
- public:
-  LIR_OpNoSpillBegin() : LIR_Op0(lir_nop) {}
-
-  // Emit no code at all (not even nop).
-  virtual void emit_code(LIR_Assembler* masm) {}
-  virtual LIR_OpNoSpillBegin* as_OpNoSpillBegin() { return this; }
-  virtual void print_instr(outputStream* out) const PRODUCT_RETURN;
-};
-
-class LIR_OpNoSpillEnd: public LIR_Op0 {
- friend class LIR_OpVisitState;
-
- public:
-  LIR_OpNoSpillEnd() : LIR_Op0(lir_nop) {}
-
-  // Emit no code at all (not even nop).
-  virtual void emit_code(LIR_Assembler* masm) {}
-  virtual LIR_OpNoSpillEnd* as_OpNoSpillEnd() { return this; }
-  virtual void print_instr(outputStream* out) const PRODUCT_RETURN;
-};
-
 class LIR_InsertionBuffer;
 
 //--------------------------------LIR_List---------------------------------------------------
@@ -2468,9 +2440,6 @@ class LIR_List: public CompilationResourceObj {
                               LIR_Opr tmp1, LIR_Opr tmp2,
                               ciKlass* left_klass, ciKlass* right_klass, LIR_Opr left_klass_op, LIR_Opr right_klass_op,
                               CodeEmitInfo* info, CodeStub* stub);
-
-  void begin_no_spill();
-  void end_no_spill();
 
   void checkcast (LIR_Opr result, LIR_Opr object, ciKlass* klass,
                   LIR_Opr tmp1, LIR_Opr tmp2, LIR_Opr tmp3, bool fast_check,
